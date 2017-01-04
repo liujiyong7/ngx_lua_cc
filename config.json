@@ -1,0 +1,44 @@
+{
+    "host": {
+        "test.a.com": {
+            "rule": [
+                {
+                    "id": "111",
+                    "state": "on",
+                    "pattern": {
+                        "uri": [],
+                        "ua": [],
+                        "rate": {
+                            "limit": 4,
+                            "phase": 10,
+                            "block_time": 5,
+                            "dim": [
+                                "ip",
+                                "uri",
+                                "ua"
+                            ]
+                        }
+                    },
+                    "action": "deny"
+                },
+                {
+                    "id": "222",
+                    "state": "on",
+                    "pattern": {
+                        "uri": [],
+                        "ua": [],
+                        "rate": {
+                            "limit": 90,
+                            "phase": 10,
+                            "block_time": 20,
+                            "dim": [
+                                "ip"
+                            ]
+                        }
+                    },
+                    "action": "deny"
+                }
+            ]
+        }
+    }
+}
