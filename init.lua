@@ -1,4 +1,5 @@
 local cjson = require 'cjson'
+local redis = require "resty.redis"
 local limit = ngx.shared.limit
 
 local file = io.open("/usr/local/openresty/nginx/conf/ngx_lua_cc/config.json", "r");
@@ -24,6 +25,7 @@ for site,req_cfg in pairs(cfg['host']) do
 			if rule['state'] == 'on' and rule['pattern'] and rule['pattern']['rate'] then
 				local rate_cfg = rule['pattern']['rate']
 				if rate_cfg['dim'] then
+					rule['pattern']['suffix'] = rate_cfg['phase']..':'..rate_cfg['limit']..':'..rate_cfg['block_time']
 					local index = 0
 					for i,dim in ipairs(rate_cfg['dim']) do
 						--ip:1 uri:2 ua:4
@@ -37,7 +39,7 @@ for site,req_cfg in pairs(cfg['host']) do
 					end
 					local index_cfg
 					if host_cfg[tostring(index)] then
-						index_cfg = host_cfg[index]
+						index_cfg = host_cfg[tostring(index)]
 					else
 						index_cfg = {}
 						index_cfg['count'] = {}
@@ -55,7 +57,6 @@ for site,req_cfg in pairs(cfg['host']) do
 								index_cfg['ua'] = 1
 							end
 						end
-						rule['pattern']['suffix'] = rate_cfg['phase']..':'..rate_cfg['limit']..':'..rate_cfg['block_time']
 						host_cfg[tostring(index)] = index_cfg
 					end
 	
@@ -93,7 +94,7 @@ function close_redis(red)
     local ok, err = red:set_keepalive(pool_max_idle_time, pool_size)  
   
     if not ok then  
-        ngx_log(ngx_ERR, "set redis keepalive error : ", err)  
+        --ngx_log(ngx_ERR, "set redis keepalive error : ", err)  
     end  
 end
 
@@ -146,21 +147,18 @@ function deny_cc()
 end
 
 function count_redis(premature, host, clientIP, uri, ua)
-	local redis = require "resty.redis"
-	local red = redis:new()
-	red:set_timeout(1000) -- 1 secs
-	local ok, err = red:connect(redis_host, redis_port)
-	if not ok then
-	    ngx.say("failed to connect: ", err)
-	    return close_redis(red)
-	end
-	--local clientIP = getClientIp()
-	--local uri = ngx.var.uri
-	--local ua = ngx.req.get_headers()["User-Agent"]
-	--local host = ngx.req.get_headers()["Host"]
-	host_cfg = parse_config[host]
+	local host_cfg = parse_config[host]
 	if host_cfg then
-		prefix = 'u:'..host
+		local red = redis:new()
+		red:set_timeout(5000) -- 1 secs
+		local ok, err = red:connect(redis_host, redis_port, {pool = "anticc_redis_pool"})
+		if not ok then
+	 	    return close_redis(red)
+		end
+
+		local prefix = 'u:'..host
+		local keys = {}
+		local index = 1
 		for _, req_cfg in pairs(host_cfg) do
 			local req = ''
 			if req_cfg['ip'] then
@@ -174,17 +172,18 @@ function count_redis(premature, host, clientIP, uri, ua)
 			end
 
 			for phase,limit_cfg in pairs(req_cfg['count']) do
-				key = prefix..req..':'..phase
-				res, err = red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,key, phase)
-				--ngx.say(key," ",res)
+				local key = prefix..req..':'..phase
+				keys[index] = key
+				local res, err = red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,key, phase)
 				for limit_str, block_time_cfg in pairs(limit_cfg) do
 					for _, block_time in pairs(block_time_cfg) do
 						if res >= tonumber(limit_str) then
-							shared_key = key..':'..limit_str..':'..block_time
+							shared_key = keys[index]..':'..limit_str..':'..block_time
 							limit:set(shared_key, 1, block_time)
 						end
 					end
 				end
+				index = index + 1
 			end
 		end
 	end
