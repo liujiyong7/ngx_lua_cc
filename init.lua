@@ -150,11 +150,12 @@ function count_redis(premature, host, clientIP, uri, ua)
 	local host_cfg = parse_config[host]
 	if host_cfg then
 		local red = redis:new()
-		red:set_timeout(5000) -- 1 secs
-		local ok, err = red:connect(redis_host, redis_port, {pool = "anticc_redis_pool"})
+		red:set_timeout(1000) -- 1 secs
+		local ok, err = red:connect(redis_host, redis_port)
 		if not ok then
 	 	    return close_redis(red)
 		end
+		red:init_pipeline()
 
 		local prefix = 'u:'..host
 		local keys = {}
@@ -174,7 +175,28 @@ function count_redis(premature, host, clientIP, uri, ua)
 			for phase,limit_cfg in pairs(req_cfg['count']) do
 				local key = prefix..req..':'..phase
 				keys[index] = key
-				local res, err = red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,key, phase)
+				red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,key, phase)
+				--for limit_str, block_time_cfg in pairs(limit_cfg) do
+					--for _, block_time in pairs(block_time_cfg) do
+						--if res >= tonumber(limit_str) then
+							--shared_key = keys[index]..':'..limit_str..':'..block_time
+							--limit:set(shared_key, 1, block_time)
+						--end
+					--end
+				--end
+				index = index + 1
+			end
+		end
+		local results, err = red:commit_pipeline()
+		if not results then
+			ngx.say("failed to commit the pipelined requests: ", err)
+			return
+		end
+		index = 1
+		for _, req_cfg in pairs(host_cfg) do
+			for phase,limit_cfg in pairs(req_cfg['count']) do
+				--res, err = red:eval("local res, err = redis.call('incr',KEYS[1]) if res == 1 then local resexpire, err = redis.call('expire',KEYS[1],KEYS[2]) end return (res)",2,key, phase)
+				res = results[index]
 				for limit_str, block_time_cfg in pairs(limit_cfg) do
 					for _, block_time in pairs(block_time_cfg) do
 						if res >= tonumber(limit_str) then
@@ -186,5 +208,6 @@ function count_redis(premature, host, clientIP, uri, ua)
 				index = index + 1
 			end
 		end
+		return close_redis(red)
 	end
 end
